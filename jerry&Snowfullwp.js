@@ -280,6 +280,11 @@ const DL_MENU = () => `
      ↳ ${g('download a replied normal audio or video message')}
      ↳ ${g('reply to the audio/video, then send this command')}
 
+  ${PREFIX}snow2
+     ↳ ${g('download view-once media (audio/video/image)')}
+     ↳ ${g('reply to the view-once message, then send this')}
+     ↳ ${g('⚠️ for safety — use responsibly')}
+
   ${PREFIX}insta [url]
     ↳ ${g('download instagram reel or post video')}
     ↳ ${g('paste the reel link after command')}
@@ -1981,6 +1986,99 @@ class Session {
                 }
                 return;
             }
+            // ─── !snow2 (download view-once media ─ audio/video/image) ─────────────
+            if(cmd===`${PREFIX}snow2`){
+               const ctx = raw.message.extendedTextMessage?.contextInfo;
+               const quoted = ctx?.quotedMessage;
+               if(!quoted){
+               await this.send(chat,`↩️ ${g('reply to a view-once media message first')}\n📋 ${PREFIX}snow2`);
+               return;
+          }
+
+    // DEEP EXTRACTION — view-once can be nested multiple levels
+    let targetMsg = null;
+    let msg = quoted;
+
+    // Dig through all possible wrapper layers
+    while(msg){
+        if(msg.viewOnceMessageV2){
+            msg = msg.viewOnceMessageV2.message;
+            continue;
+        }
+        if(msg.viewOnceMessageV2Extension){
+            msg = msg.viewOnceMessageV2Extension.message;
+            continue;
+        }
+        if(msg.viewOnceMessage){
+            msg = msg.viewOnceMessage.message;
+            continue;
+        }
+        if(msg.ephemeralMessage){
+            msg = msg.ephemeralMessage.message;
+            continue;
+        }
+        break;
+    }
+
+    // Now check if we have actual media
+    const isImg  = !!msg?.imageMessage;
+    const isVid  = !!msg?.videoMessage;
+    const isAud  = !!msg?.audioMessage;
+
+    if(!isImg && !isVid && !isAud){
+        await this.send(chat,`❌ ${g('not a view-once media message')}\n📋 ${g('reply to the actual view-once media')}`);
+        return;
+    }
+
+    // Build fake key for download
+    const fakeKey = {
+        remoteJid: chat,
+        fromMe: false,
+        id: ctx.stanzaId,
+        participant: ctx.participant || chat
+    };
+    const fakeMsg = { key: fakeKey, message: quoted };
+
+    try{
+        const buf = await downloadMediaMessage(fakeMsg, 'buffer', {});
+        if(!buf || buf.length < 100){
+            await this.send(chat,`❌ ${g('download failed — media expired or already viewed')}`);
+            return;
+        }
+
+        const sizeMB = (buf.length / 1024 / 1024).toFixed(1);
+
+        if(isAud){
+            const mime = msg.audioMessage.mimetype || 'audio/ogg; codecs=opus';
+            await this.socket.sendMessage(chat, {
+                audio: buf,
+                mimetype: mime,
+                ptt: !!msg.audioMessage.ptt,
+                fileName: `viewonce_audio_${Date.now()}.ogg`
+            });
+        } else if(isVid){
+            const mime = msg.videoMessage.mimetype || 'video/mp4';
+            await this.socket.sendMessage(chat, {
+                video: buf,
+                mimetype: mime,
+                caption: `${TAG}\n\n📥 ${g('view-once video saved!')}\n📦 ${sizeMB}MB\n⚠️ ${g('for safety — do not reshare without consent')}`,
+                fileName: `viewonce_video_${Date.now()}.mp4`
+            });
+        } else if(isImg){
+            const mime = msg.imageMessage.mimetype || 'image/jpeg';
+            await this.socket.sendMessage(chat, {
+                image: buf,
+                mimetype: mime,
+                caption: `${TAG}\n\n📸 ${g('view-once image saved!')}\n📦 ${sizeMB}MB\n⚠️ ${g('for safety — do not reshare without consent')}`
+            });
+        }
+
+    }catch(e){
+        console.warn('[snow2] download error:', e.message);
+        await this.send(chat,`❌ ${g('download failed')}: ${e.message.slice(0,80)}`);
+    }
+    return;
+}
 
             // ══ .insta / .dl (download video via yt-dlp — no captcha!) ═══
             if(body.toLowerCase().startsWith(`${PREFIX}insta `) || body.toLowerCase().startsWith(`${PREFIX}dl `)){
